@@ -163,7 +163,7 @@ class RandomOrLearnedSinusoidalPosEmb(nn.Module):
         return fouriered
 
 # building block modules
-
+# 卷积+normalize+激活
 class Block(nn.Module):
     def __init__(self, dim, dim_out, groups = 8):
         super().__init__()
@@ -284,15 +284,20 @@ class Unet(nn.Module):
         # determine dimensions
 
         self.channels = channels
-        self.self_condition = self_condition
-        input_channels = channels * (2 if self_condition else 1)
+        self.self_condition = self_condition # condition on image
+        input_channels = channels * (2 if self_condition else 1) # input channel double
 
-        init_dim = default(init_dim, dim)
+        init_dim = default(init_dim, dim) # convolution dim
         self.init_conv = nn.Conv2d(input_channels, init_dim, 7, padding = 3)
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
+        # dim_mults = (1, 2, 4, 8)
+        # lambda m: dim * m
+        # dim = 64
+        # map: 映射函数，把dim_mults中的每个元素映射到 这个lambda函数 lambda m: dim * m
+        # dims = [64, 64, 128, 256, 512]
         in_out = list(zip(dims[:-1], dims[1:]))
-
+        # groups: groups normalize
         block_klass = partial(ResnetBlock, groups = resnet_block_groups)
 
         # time embeddings
@@ -300,11 +305,12 @@ class Unet(nn.Module):
         time_dim = dim * 4
 
         self.random_or_learned_sinusoidal_cond = learned_sinusoidal_cond or random_fourier_features
-
+        # 时间t的编码是否可以学习
         if self.random_or_learned_sinusoidal_cond:
+            # 如果是可以学习的就学习sin cos 的参数
             sinu_pos_emb = RandomOrLearnedSinusoidalPosEmb(learned_sinusoidal_dim, random_fourier_features)
             fourier_dim = learned_sinusoidal_dim + 1
-        else:
+        else:# 不能学习的就直接Sinusoidal position embedding
             sinu_pos_emb = SinusoidalPosEmb(dim)
             fourier_dim = dim
 
@@ -327,7 +333,7 @@ class Unet(nn.Module):
             self.downs.append(nn.ModuleList([
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
-                Residual(PreNorm(dim_in, LinearAttention(dim_in))),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))), # PreNorm在送进attenstion之前要norm一下，这里用的layernorm
                 Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1)
             ]))
 
@@ -398,7 +404,7 @@ class Unet(nn.Module):
 def extract(a, t, x_shape):
     b, *_ = t.shape
     out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+    return out.reshape(b, *((1,) * (len(x_shape) - 1))) # [B, 3, H, W], out reshape to [B, 1, 1, 1]
 
 def linear_beta_schedule(timesteps):
     """
@@ -456,7 +462,7 @@ class GaussianDiffusion(nn.Module):
         assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
         assert not model.random_or_learned_sinusoidal_cond
 
-        self.model = model
+        self.model = model # unet model
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
 
@@ -467,7 +473,7 @@ class GaussianDiffusion(nn.Module):
         assert objective in {'pred_noise', 'pred_x0', 'pred_v'}, 'objective must be either pred_noise (predict noise) or pred_x0 (predict image start) or pred_v (predict v [v-parameterization as defined in appendix D of progressive distillation paper, used in imagen-video successfully])'
 
         if beta_schedule == 'linear':
-            beta_schedule_fn = linear_beta_schedule
+            beta_schedule_fn = linear_beta_schedule # 平均等分
         elif beta_schedule == 'cosine':
             beta_schedule_fn = cosine_beta_schedule
         elif beta_schedule == 'sigmoid':
@@ -477,9 +483,9 @@ class GaussianDiffusion(nn.Module):
 
         betas = beta_schedule_fn(timesteps, **schedule_fn_kwargs)
 
-        alphas = 1. - betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
-        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.)
+        alphas = 1. - betas # eq4上面那一行
+        alphas_cumprod = torch.cumprod(alphas, dim=0) # alpha_t_bar, torch.Size([1000])
+        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.) # alpha_t-1_bar
 
         timesteps, = betas.shape
         self.num_timesteps = int(timesteps)
@@ -505,11 +511,11 @@ class GaussianDiffusion(nn.Module):
 
         register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
-        register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))
-        register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod))
-        register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))
+        register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod)) # 没用
+        register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod)) # coefs in DDPM eq9's predict x_0 from x_t，第一个系数
+        register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1)) #第二个系数
 
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
+        # calculations for posterior q(x_{t-1} | x_t, x_0), eq7
 
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
 
@@ -518,7 +524,7 @@ class GaussianDiffusion(nn.Module):
         register_buffer('posterior_variance', posterior_variance)
 
         # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
-
+        # coefs in DDPM eq7
         register_buffer('posterior_log_variance_clipped', torch.log(posterior_variance.clamp(min =1e-20)))
         register_buffer('posterior_mean_coef1', betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
         register_buffer('posterior_mean_coef2', (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
@@ -552,6 +558,7 @@ class GaussianDiffusion(nn.Module):
         )
 
     def q_posterior(self, x_start, x_t, t):
+        # DDPM: eq7
         posterior_mean = (
             extract(self.posterior_mean_coef1, t, x_t.shape) * x_start +
             extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
@@ -566,6 +573,7 @@ class GaussianDiffusion(nn.Module):
 
         if self.objective == 'pred_noise':
             pred_noise = model_output
+            # https://github.com/hojonathanho/diffusion/issues/5
             x_start = self.predict_start_from_noise(x, t, pred_noise)
             x_start = maybe_clip(x_start)
 
@@ -685,7 +693,7 @@ class GaussianDiffusion(nn.Module):
 
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
-
+        # DDPM: eq4
         return (
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
@@ -827,7 +835,18 @@ class Trainer(object):
 
         # dataset and dataloader
 
-        self.ds = Dataset(folder, self.image_size, augment_horizontal_flip = augment_horizontal_flip, convert_image_to = convert_image_to)
+        ##cifa10
+        import torchvision
+        self.ds = torchvision.datasets.CIFAR10(
+                        root=folder,
+                        transform=T.Compose([
+                                T.ToTensor(),
+                                T.Normalize((0.4915, 0.4823, 0.4468),
+                                                    (0.2470, 0.2435, 0.2616))
+                                                    ]),
+                        download=False)
+
+        # self.ds = Dataset(folder, self.image_size, augment_horizontal_flip = augment_horizontal_flip, convert_image_to = convert_image_to)
         dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = cpu_count())
 
         dl = self.accelerator.prepare(dl)
@@ -898,7 +917,7 @@ class Trainer(object):
                 total_loss = 0.
 
                 for _ in range(self.gradient_accumulate_every):
-                    data = next(self.dl).to(device)
+                    data = next(self.dl)[0].to(device)
 
                     with self.accelerator.autocast():
                         loss = self.model(data)
