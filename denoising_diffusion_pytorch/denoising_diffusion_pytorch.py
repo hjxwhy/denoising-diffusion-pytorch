@@ -558,7 +558,7 @@ class GaussianDiffusion(nn.Module):
         )
 
     def q_posterior(self, x_start, x_t, t):
-        # DDPM: eq7
+        # DDPM: eq7, 算出来mu_tilt_t = mu_theta，他就是公式11的最右边，顶替往下两行x_{t-1}公式的左边
         posterior_mean = (
             extract(self.posterior_mean_coef1, t, x_t.shape) * x_start +
             extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
@@ -606,7 +606,7 @@ class GaussianDiffusion(nn.Module):
         batched_times = torch.full((x.shape[0],), t, device = x.device, dtype = torch.long)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(x = x, t = batched_times, x_self_cond = x_self_cond, clip_denoised = True)
         noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
-        pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
+        pred_img = model_mean + (0.5 * model_log_variance).exp() * noise # 11和11之间的公式
         return pred_img, x_start
 
     @torch.no_grad()
@@ -693,7 +693,8 @@ class GaussianDiffusion(nn.Module):
 
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
-        # DDPM: eq4
+        # DDPM: eq4, x_start [B, 3, H, W],
+        # extract(self.sqrt_alphas_cumprod, t, x_start.shape) [B, 1, 1, 1]
         return (
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
