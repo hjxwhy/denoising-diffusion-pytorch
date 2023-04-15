@@ -129,6 +129,21 @@ class SinusoidalPosEmb(nn.Module):
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
 
+class PosintEmb(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim//2
+    def forward(self, x):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        # x:[B, 1, 2, N,], emb:[1, d, 1, 1] -> [B, d, 2, N]
+        emb = x.unsqueeze(1) * emb[None].unsqueeze(-1).unsqueeze(-1)
+        emb = torch.cat((emb.sin(), emb.cos()), dim=1)
+        emb = rearrange(emb, 'b d c n -> b (d c) n')
+        return emb
+
 class RandomOrLearnedSinusoidalPosEmb(nn.Module):
     """ following @crowsonkb 's lead with random (learned optional) sinusoidal pos emb """
     """ https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8 """
@@ -272,6 +287,18 @@ class Unet1D(nn.Module):
 
         init_dim = default(init_dim, dim)
         self.init_conv = nn.Conv1d(input_channels, init_dim, 7, padding = 3)
+        self.init_emb = PosintEmb(init_dim)
+        # self.init_conv = nn.Sequential(
+        #     # PosintEmb(init_dim),        
+        #     nn.Conv1d(init_dim, init_dim, 7, padding = 3),
+        #     # nn.GELU()
+        # )
+        self.init_linear = nn.Sequential(
+            nn.Linear(init_dim,init_dim),
+            nn.GELU(),
+            nn.Linear(init_dim,init_dim),
+            nn.GELU(),   
+        )
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
@@ -339,7 +366,10 @@ class Unet1D(nn.Module):
         if self.self_condition:
             x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
             x = torch.cat((x_self_cond, x), dim = 1)
-
+        # x = self.init_emb(x)
+        # x = x.permute(0, 2, 1)
+        # x = self.init_linear(x)
+        # x = x.permute(0, 2, 1)
         x = self.init_conv(x)
         r = x.clone()
 

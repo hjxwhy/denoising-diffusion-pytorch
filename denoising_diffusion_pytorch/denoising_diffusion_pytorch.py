@@ -25,6 +25,10 @@ from accelerate import Accelerator
 
 from denoising_diffusion_pytorch.version import __version__
 
+import numpy as np 
+import matplotlib.pyplot as plt
+from tensorboardX import SummaryWriter
+import time
 # constants
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
@@ -757,7 +761,7 @@ class GaussianDiffusion(nn.Module):
 
 # dataset classes
 
-class Dataset(Dataset):
+class Dataset2D(Dataset):
     def __init__(
         self,
         folder,
@@ -789,8 +793,94 @@ class Dataset(Dataset):
         img = Image.open(path)
         return self.transform(img)
 
-# trainer class
+class SeqDataset(Dataset):
+    def __init__(
+        self,
+        folder,
+    ):
+        super().__init__()
+        import os
+        # folder = "/root/diffusionModel/AD_github"
+        seqs = os.listdir(folder)[1:2]
+        print("seq id: ", seqs)
+        datas = []
+        for seq in seqs:
+            for i in range(1, 6):
+                with open(os.path.join(folder, seq, str(i)+".txt")) as f:
+                    lines = f.readlines()
+                    lines = [float(line.strip()) for line in lines]
+                    assert len(lines) == 800, "error length"
+                    datas.append(lines)
 
+        datas = torch.tensor(datas)
+        min_d, max_d = datas.min(), datas.max()+1
+        datas = (datas - min_d)/(max_d - min_d)
+        x = torch.linspace(0, 1-1e-3, 800)[None].repeat([len(datas), 1])
+        self.datas = torch.cat([x.unsqueeze(-1), datas.unsqueeze(-1)], dim=-1)
+    def __len__(self):
+        return len(self.datas)
+    def __getitem__(self, idx):
+        return self.datas[idx]
+
+
+import os
+def save_2d(data, save_dir):
+
+    data = data.cpu().numpy()
+    for i in range(len(data)):
+        x = data[i, 0, :]
+        y = data[i, 1, :]
+        # plt.scatter(x,y)
+        plt.plot(x,y) 
+        plt.savefig(os.path.join(save_dir, str(i)+".png"))
+        plt.cla()
+
+from sklearn.manifold import TSNE
+def eval_tsne(predict_datas, source_datas, save_dir):
+    # predict_datas:[B, 2, 800], source_datas:[5, 2, 800]
+    source_datas = source_datas.permute(0, 2, 1)
+    fake_data = predict_datas[:, 1]
+    real_data = source_datas[:, 1]
+    all_data = torch.cat([real_data, fake_data]).cpu().numpy()
+    print(all_data.shape)
+    tsne=TSNE(n_components=2,init='pca',random_state=0)
+    all_data=tsne.fit_transform(all_data)
+
+    all_data[:, 0] = (all_data[:, 0] - all_data[:, 0].min()) / (all_data[:, 0].max() - all_data[:, 0].min())
+    all_data[:, 1] = (all_data[:, 1] - all_data[:, 1].min()) / (all_data[:, 1].max() - all_data[:, 1].min())
+    real_data=all_data[:real_data.shape[0]]
+    fake_data=all_data[real_data.shape[0]:]
+
+    # x = data[i, 0, :]
+    # y = data[i, 1, :]
+    plt.scatter(real_data[:, 0], real_data[:,1], c='red', marker='.', s=1000)
+    plt.scatter(fake_data[:, 0], fake_data[:,1], c='blue', marker='*')
+    plt.savefig(os.path.join(save_dir, "tsne.png"))
+
+    os.makedirs(os.path.join(save_dir, "result_txt", "fake_data"), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "result_txt", "real_data"), exist_ok=True)
+    i = 1
+    for d in predict_datas[:, 1]:
+        # fake_data [B, 800]
+        d = d.cpu().numpy().tolist()
+        d = map(str, d)
+        d = "\n".join(d)
+        with open(os.path.join(save_dir, "result_txt", "fake_data", str(i)+".txt"), "w") as f:
+            f.writelines(d)
+        i+=1
+
+    i = 1
+    for d in source_datas[:, 1]:
+        d = d.cpu().numpy().tolist()
+        d = map(str, d)
+        d = "\n".join(d)
+        with open(os.path.join(save_dir, "result_txt", "real_data", str(i)+".txt"), "w") as f:
+            f.writelines(d)
+        i+=1        
+
+
+
+# trainer class
 class Trainer(object):
     def __init__(
         self,
@@ -806,7 +896,7 @@ class Trainer(object):
         ema_decay = 0.995,
         adam_betas = (0.9, 0.99),
         save_and_sample_every = 1000,
-        num_samples = 25,
+        num_samples = 36,
         results_folder = './results',
         amp = False,
         fp16 = False,
@@ -832,23 +922,23 @@ class Trainer(object):
         self.gradient_accumulate_every = gradient_accumulate_every
 
         self.train_num_steps = train_num_steps
-        self.image_size = diffusion_model.image_size
+        # self.image_size = diffusion_model.image_size
 
         # dataset and dataloader
 
         ##cifa10
-        import torchvision
-        self.ds = torchvision.datasets.CIFAR10(
-                        root=folder,
-                        transform=T.Compose([
-                                T.ToTensor(),
-                                T.Normalize((0.4915, 0.4823, 0.4468),
-                                                    (0.2470, 0.2435, 0.2616))
-                                                    ]),
-                        download=False)
-
+        # import torchvision
+        # self.ds = torchvision.datasets.CIFAR10(
+        #                 root=folder,
+        #                 transform=T.Compose([
+        #                         T.ToTensor(),
+        #                         T.Normalize((0.4915, 0.4823, 0.4468),
+        #                                             (0.2470, 0.2435, 0.2616))
+        #                                             ]),
+        #                 download=False)
+        self.ds = SeqDataset(folder)
         # self.ds = Dataset(folder, self.image_size, augment_horizontal_flip = augment_horizontal_flip, convert_image_to = convert_image_to)
-        dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = cpu_count())
+        dl = DataLoader(self.ds, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = 4)
 
         dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
@@ -872,6 +962,7 @@ class Trainer(object):
         # prepare model, dataloader, optimizer with accelerator
 
         self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
+        # self.writer = SummaryWriter(self.results_folder)
 
     def save(self, milestone):
         if not self.accelerator.is_local_main_process:
@@ -910,6 +1001,7 @@ class Trainer(object):
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
+        data = None
 
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
@@ -918,7 +1010,12 @@ class Trainer(object):
                 total_loss = 0.
 
                 for _ in range(self.gradient_accumulate_every):
-                    data = next(self.dl)[0].to(device)
+                    if data is None:                           
+                        data = next(self.dl).to(device)
+                        data = data.permute(0, 2, 1)
+                    else:
+                        perm = torch.from_numpy(np.random.permutation(len(data))).to(data.device)
+                        data = data[perm]
 
                     with self.accelerator.autocast():
                         loss = self.model(data)
@@ -929,6 +1026,7 @@ class Trainer(object):
 
                 accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
+                # self.writer.add_scalar("loss", total_loss, self.step)
 
                 accelerator.wait_for_everyone()
 
@@ -951,7 +1049,9 @@ class Trainer(object):
                             all_images_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
 
                         all_images = torch.cat(all_images_list, dim = 0)
-                        utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
+                        save_2d(all_images, str(self.results_folder))
+                        eval_tsne(all_images, self.ds.datas.cuda(), str(self.results_folder))
+                        # utils.save_image(all_images, str(self.results_folder / f'sample-{milestone}.png'), nrow = int(math.sqrt(self.num_samples)))
                         self.save(milestone)
 
                 pbar.update(1)

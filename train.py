@@ -28,11 +28,51 @@
 
 # trainer.train()
 
-from transformers import T5Tokenizer
-tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-xxl")
-# print(tokenizer.get_vocab())
-input_text = "translate English to German: How old are you?"
-input_ids = tokenizer(input_text).input_ids
-print(input_ids)
-# s = tokenizer.convert_tokens_to_string(input_ids)
-# print(s)
+# from transformers import T5Tokenizer
+# tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-xxl")
+# # print(tokenizer.get_vocab())
+# input_text = "translate English to German: How old are you?"
+# input_ids = tokenizer(input_text).input_ids
+# print(input_ids)
+# # s = tokenizer.convert_tokens_to_string(input_ids)
+# # print(s)
+
+from denoising_diffusion_pytorch.denoising_diffusion_pytorch import Trainer
+from denoising_diffusion_pytorch.denoising_diffusion_pytorch_1d import Unet1D, GaussianDiffusion1D
+
+model = Unet1D(
+    dim = 32,
+    dim_mults = (1, 2, 4, 8),
+    channels = 2
+)
+
+diffusion = GaussianDiffusion1D(
+    model,
+    seq_length = 800,
+    timesteps = 1000,
+    # sampling_timesteps=200,
+    # objective = 'pred_v'
+)
+data_dir = "/root/diffusionModel/AD_github"
+trainer = Trainer(diffusion, data_dir, train_batch_size=1280, results_folder="./results_2")
+# trainer.load(40)
+trainer.train()
+# import torch
+# import os
+# folder = "/root/diffusionModel/AD_github"
+# seqs = os.listdir(folder)
+# datas = []
+# for seq in seqs:
+#     for i in range(1, 6):
+#         with open(os.path.join(folder, seq, str(i)+".txt")) as f:
+#             lines = f.readlines()
+#             lines = [float(line.strip()) for line in lines]
+#             assert len(lines) == 800, "error length"
+#             datas.append(lines)
+
+# datas = torch.tensor(datas)
+# min_d, max_d = datas.min(), datas.max()
+# datas = (datas - min_d)/(max_d - min_d) - 1
+# print(datas.min())
+# print(min_d, max_d)
+            
